@@ -30,15 +30,17 @@ Os dados (resumos, registro de sessões e log) ficam na pasta de dados do plugin
 ## Requisitos
 
 - Claude Code com login feito e `claude` no `PATH`.
-- `python3` 3.8 ou mais novo, sem pacotes extras.
-- macOS ou Linux. Testado só no Linux. Windows não é suportado: o servidor de recall usa `ps` para achar o processo do Claude Code.
+- `python3` 3.9 ou mais novo, sem pacotes extras.
+- Linux, macOS ou Windows. Os hooks e o servidor de recall abrem o Python direto, sem shell, então o Windows não precisa do Git Bash para eles. O fluxo completo (instalação, compactação, resumo e recall) foi testado no Linux, com o Claude Code logado. Os scripts são testados no Linux, no macOS e no Windows pelo CI, com Python 3.9 e 3.13 e um substituto do `claude`, porque o CI não tem login no Claude.
 
 ## Instalação
 
 ```bash
 claude plugin marketplace add joaovitor2763/claude-contextmanagement
-claude plugin install context-manager@claude-contextmanagement
+claude plugin install context-manager@claude-contextmanagement --config python=python3
 ```
+
+A opção `python` é o comando que abre o Python 3. Use `python3` no macOS e no Linux. No Windows, use `python` ou `py` (o `python3` que o Windows cria abre a Microsoft Store quando o Python veio do python.org). Um caminho completo também funciona. Se você instalar pela tela do `/plugin`, ela pede esse valor. Para trocar depois, rode `/plugin configure context-manager@claude-contextmanagement`. Sem ele, os hooks não rodam.
 
 Um plugin não define variável de ambiente. Defina a janela no `~/.claude/settings.json`:
 
@@ -70,6 +72,7 @@ Abra uma sessão nova. O `/plugin` deve mostrar o `context-manager` ativo, e o `
 | `CCM_SUMMARY_MODEL` | `haiku` | Modelo que escreve o resumo cumulativo (`haiku`, `sonnet` ou um id completo). |
 | `CCM_ENV_FILE` | vazio | Só para login por variável de ambiente (CI, containers com `CLAUDE_CODE_OAUTH_TOKEN`). Os hooks não recebem essa variável: aponte para um arquivo `CHAVE=valor` que a tenha. Com login normal pelo navegador, não precisa. |
 | `RECALL_TRANSCRIPT` | vazio | Força o transcript que o `session_recall` lê. Serve para depurar. |
+| `CCM_MAX_OUTPUT_TOKENS` | `15000` | Teto de saída do resumidor. Se o resumo passar dele, o Claude Code continua o texto e o hook junta as partes. |
 
 Para remover: `claude plugin uninstall context-manager@claude-contextmanagement`, e tire `CLAUDE_CODE_AUTO_COMPACT_WINDOW` das configurações.
 

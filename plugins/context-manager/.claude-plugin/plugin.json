@@ -11,7 +11,7 @@
     "python": {
       "type": "string",
       "title": "Python 3 command",
-      "description": "The command that starts Python 3.8 or newer: python3 on macOS and Linux; python or py on Windows. A full path also works.",
+      "description": "The command that starts Python 3.9 or newer: python3 on macOS and Linux; python or py on Windows. A full path also works.",
       "default": "python3"
     }
   }

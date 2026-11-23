@@ -30,15 +30,17 @@ Data (summaries, the session registry and a log) is kept in the plugin data fold
 ## Requirements
 
 - Claude Code, logged in, with `claude` on your `PATH`.
-- `python3` 3.8 or newer. No extra packages.
-- macOS or Linux. Tested only on Linux. Windows is not supported: the recall server uses `ps` to find the Claude Code process.
+- `python3` 3.9 or newer. No extra packages.
+- Linux, macOS or Windows. The hooks and the recall server start Python directly, with no shell, so Windows does not need Git Bash for them. The full flow (install, compaction, summary, recall) was tested on Linux with a logged-in Claude Code. The scripts are tested on Linux, macOS and Windows in CI, with Python 3.9 and 3.13 and a stand-in for `claude`, because CI has no Claude login.
 
 ## Install
 
 ```bash
 claude plugin marketplace add joaovitor2763/claude-contextmanagement
-claude plugin install context-manager@claude-contextmanagement
+claude plugin install context-manager@claude-contextmanagement --config python=python3
 ```
+
+The `python` option is the command that starts Python 3. Use `python3` on macOS and Linux. On Windows, use `python` or `py` (the `python3` entry that Windows adds opens the Microsoft Store when Python came from python.org). A full path also works. If you install from the `/plugin` screen instead, it asks for this value. To change it later, run `/plugin configure context-manager@claude-contextmanagement`. Without it, the hooks do not run.
 
 A plugin cannot set environment variables, so set the window yourself in `~/.claude/settings.json`:
 
@@ -70,6 +72,7 @@ Open a new session. `/plugin` should list `context-manager` as enabled, and `/mc
 | `CCM_SUMMARY_MODEL` | `haiku` | The model that writes the cumulative summary (`haiku`, `sonnet`, or a full model id). |
 | `CCM_ENV_FILE` | empty | Only if you log in through an environment variable (CI, containers with `CLAUDE_CODE_OAUTH_TOKEN`). Hooks do not receive that variable, so point this at a `KEY=value` file that has it. Not needed with a normal browser login. |
 | `RECALL_TRANSCRIPT` | empty | Forces the transcript that `session_recall` reads. For debugging. |
+| `CCM_MAX_OUTPUT_TOKENS` | `15000` | Output cap for the summarizer. If the summary goes past it, Claude Code continues it and the hook joins the parts. |
 
 Uninstall: `claude plugin uninstall context-manager@claude-contextmanagement`, and remove `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from your settings.
 
