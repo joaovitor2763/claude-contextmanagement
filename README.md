@@ -12,15 +12,50 @@ With a 1M-token window, every turn of a long session re-reads the whole history.
 
 This plugin changes what happens at each compaction:
 
-1. **A cheap model writes the long summary.** Before each compaction, Haiku (through the same `claude` login) reads everything since the last compaction plus the previous summary, and writes a new cumulative summary. The main model then writes only a short summary of the recent work, which is faster.
+1. **A cheap model writes the long summary.** Before each compaction, Haiku (through the same `claude` login) reads a serialized version of the messages since the last compaction plus the previous summary, and writes a new cumulative summary. Tool results are shortened for this step; exact details remain searchable in the transcript. The main model is then asked to write only a short summary of the recent work.
 2. **The long summary comes back into context.** Right after compaction, a hook injects the cumulative summary next to the short one.
 3. **Exact old facts come from the transcript.** A small MCP server adds the `session_recall` tool. It does a literal search (no model) over the original session transcript, including tool results that were compacted away. The model is told to search and read the original text before it states an old number, name, date or decision.
 
 ## How it works
 
+```mermaid
+flowchart TD
+    A["Claude Code session"] --> B["SessionStart: register process and transcript"]
+    B --> C["Work with the configured context window"]
+    C --> D["Automatic or manual compaction"]
+    D --> E["PreCompact: new history + previous summary"]
+    E --> F["Haiku via claude -p, same login, no tools"]
+    F --> G{"Summary call succeeds?"}
+    G -->|Yes| H["Save cumulative summary + file lists"]
+    H --> I["Ask main model for a short recent-work summary"]
+    G -->|No| J["No short-summary instruction; native compaction"]
+    I --> K["Claude Code compacts"]
+    J --> K
+    K --> L["SessionStart compact: inject stored summary, if present"]
+    L --> M["Continue with native summary + injected history"]
+    M --> C
+    M --> N["Need an exact old fact?"]
+    N --> O["MCP session_recall: search"]
+    P[("Original transcript JSONL")] --> O
+    O --> Q["Expand matching entries; paginate if needed"]
+    Q --> R["Read original evidence, then answer"]
+    B -.-> P
+```
+
+The summary keeps the thread of the work; `session_recall` recovers the evidence. Summarization does not replace the original transcript.
+
+**Scope and boundaries:**
+
+- The context window is a Claude Code setting, not a limit enforced by the plugin. With `270000`, compaction was observed near 240k tokens; the value is not an exact compaction trigger.
+- The Haiku call is synchronous: compaction waits for the hook. This plugin does not implement background summarization, tool-result offloading, or a separate retained-recent-token budget.
+- The summarizer receives shortened tool results (2,000 characters each), not a lossless copy of the history. File lists track the supported tool calls, not every possible filesystem change made through a shell or another tool.
+- Injection currently has six configured parts. If a stored summary exceeds their combined character capacity, its tail is not injected. On a failed summarizer call, any previously stored summary can still be injected; it may be stale. These are implementation limits, not guarantees of complete memory.
+
+All script paths in the table below are relative to [`plugins/context-manager/`](plugins/context-manager/).
+
 | Part | File | What it does |
 | --- | --- | --- |
-| `PreCompact` hook | `scripts/precompact_summary.py` | Serializes the messages since the last compaction (tool results cut at 2,000 characters), adds the previous summary, and calls `claude -p --model haiku` with no tools. The summary has a fixed structure (goal, constraints, progress, decisions, next steps, critical context) and rules that put the user's own words first and copy names, numbers, ids, paths and errors exactly. Output is capped at 15,000 tokens. The hook appends the cumulative list of files read and modified (`Read`, `Write`, `Edit`, `NotebookEdit`). If the call fails, the hook prints nothing and Claude Code compacts normally. |
+| `PreCompact` hook | `scripts/precompact_summary.py` | Serializes the messages since the last compaction (tool results cut at 2,000 characters), adds the previous summary, and calls `claude -p --model haiku` with no tools. The summary has a fixed structure (goal, constraints, progress, decisions, next steps, critical context) and rules that put the user's own words first and copy names, numbers, ids, paths and errors exactly. The output budget is 15,000 tokens per response; continued responses are joined. The hook appends the cumulative list of files read and modified (`Read`, `Write`, `Edit`, `NotebookEdit`). If the call fails, the hook prints no short-summary instruction and Claude Code compacts normally. |
 | `SessionStart` hook (matcher `compact`) | `scripts/inject_summary.py` | Injects the cumulative summary in up to 6 parts of 9,600 characters, because Claude Code caps each hook's output at 10,000 characters. |
 | `SessionStart` hook | `scripts/register_session.py` | Records which transcript belongs to the running Claude Code process, so `session_recall` reads the right file. |
 | MCP server `recall` | `scripts/recall_mcp.py` | `session_recall` with `action: search` (exact phrase first, then entries with most of the words, ignoring case and accents; each hit shows the matching line centred on the match, with its neighbours) and `action: expand` (reads entries by id; a long entry comes in 10,000-character pages through `offset` and `next_offset`). |
@@ -72,7 +107,7 @@ Open a new session. `/plugin` should list `context-manager` as enabled, and `/mc
 | `CCM_SUMMARY_MODEL` | `haiku` | The model that writes the cumulative summary (`haiku`, `sonnet`, or a full model id). |
 | `CCM_ENV_FILE` | empty | Only if you log in through an environment variable (CI, containers with `CLAUDE_CODE_OAUTH_TOKEN`). Hooks do not receive that variable, so point this at a `KEY=value` file that has it. Not needed with a normal browser login. |
 | `RECALL_TRANSCRIPT` | empty | Forces the transcript that `session_recall` reads. For debugging. |
-| `CCM_MAX_OUTPUT_TOKENS` | `15000` | Output cap for the summarizer. If the summary goes past it, Claude Code continues it and the hook joins the parts. |
+| `CCM_MAX_OUTPUT_TOKENS` | `15000` | Output budget per summarizer response. If Claude Code continues a capped response, the hook joins the parts; this is not a cap on the final summary's characters or total tokens. |
 
 Uninstall: `claude plugin uninstall context-manager@claude-contextmanagement`, and remove `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from your settings.
 
