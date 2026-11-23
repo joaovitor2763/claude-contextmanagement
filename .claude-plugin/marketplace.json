@@ -1,0 +1,14 @@
+{
+  "name": "claude-contextmanagement",
+  "description": "Long Claude Code sessions with a capped context window, a cumulative summary written by a cheap model, and literal search over the full transcript.",
+  "owner": {
+    "name": "joaovitor2763"
+  },
+  "plugins": [
+    {
+      "name": "context-manager",
+      "source": "./plugins/context-manager",
+      "description": "Cumulative Haiku summary on every compaction plus a session_recall tool that searches the original transcript."
+    }
+  ]
+}

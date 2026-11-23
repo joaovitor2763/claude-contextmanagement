@@ -1,0 +1,10 @@
+{
+  "name": "context-manager",
+  "version": "1.0.0",
+  "description": "On every compaction a cheap model (Haiku by default) writes a cumulative summary of the whole session, the main model writes only a short summary of recent work, and the session_recall tool searches the original transcript for exact old facts.",
+  "author": {
+    "name": "joaovitor2763"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/joaovitor2763/claude-contextmanagement"
+}
