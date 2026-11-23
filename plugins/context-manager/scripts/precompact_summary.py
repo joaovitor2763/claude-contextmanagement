@@ -7,9 +7,9 @@ the checkpoint format of pi-coding-agent (MIT, Mario Zechner) plus summary rules
 read and modified, stores it for the SessionStart(compact) hook, and prints short-summary
 instructions so the main model writes only a brief summary of the most recent work.
 """
-import json, os, re, subprocess, sys, tempfile, time
+import json, os, re, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import DATA, LOG, NESTED, SUMMARIES as STORE
+from common import DATA, LOG, NESTED, SUMMARIES as STORE, utf8_stdio
 
 TOOL_RESULT_MAX_CHARS = 2000  # as pi-coding-agent's serializeConversation
 TOOL_ARGS_MAX_CHARS = 20000
@@ -149,6 +149,7 @@ def with_files(summary, files):
 def main():
     if os.environ.get(NESTED):
         return
+    utf8_stdio()
     hook = json.load(sys.stdin)
     sid, path = hook["session_id"], hook["transcript_path"]
     os.makedirs(STORE, exist_ok=True)
@@ -183,16 +184,24 @@ def main():
     # hooks don't receive it, so point CCM_ENV_FILE at a KEY=VALUE file that has it.
     envf = os.environ.get("CCM_ENV_FILE", "")
     if envf and os.path.exists(envf):
-        for l in open(envf):
+        for l in open(envf, encoding="utf-8"):
             k, _, v = l.rstrip("\n").partition("=")
             if k and k not in env:
                 env[k] = v
+    # Everything long goes through stdin and a file: on Windows `claude` can be a .cmd shim, which
+    # would mangle multi-line arguments.
+    claude = shutil.which("claude") or "claude"
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+        f.write(SYSTEM)
     t0 = time.time()
-    r = subprocess.run(["claude", "-p", "--model", MODEL, "--tools", "", "--no-session-persistence",
-                        "--setting-sources", "user", "--strict-mcp-config", "--system-prompt", SYSTEM,
-                        "--output-format", "stream-json", "--verbose", "--", instructions],
-                       input=body, capture_output=True, text=True, cwd=tempfile.gettempdir(), timeout=900,
-                       env=env)
+    try:
+        r = subprocess.run([claude, "-p", "--model", MODEL, "--tools", "", "--no-session-persistence",
+                            "--setting-sources", "user", "--strict-mcp-config", "--system-prompt-file", f.name,
+                            "--output-format", "stream-json", "--verbose"],
+                           input=body + instructions, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", cwd=tempfile.gettempdir(), timeout=900, env=env)
+    finally:
+        os.unlink(f.name)
     # When the summary hits the output cap, Claude Code continues it in a new assistant message and
     # `result` holds only that last piece, so join the text of every assistant message instead.
     out, texts, messages = {}, [], 0
@@ -211,7 +220,7 @@ def main():
     summary = "".join(texts).strip()
     ok = summary and r.returncode == 0 and not out.get("is_error")
     os.makedirs(DATA, exist_ok=True)
-    with open(LOG, "a") as f:
+    with open(LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps({"session": sid, "secs": round(time.time() - t0, 1), "input_chars": len(body), "model": MODEL,
                             "summary_chars": len(summary), "cost_usd": out.get("total_cost_usd"),
                             "usage": out.get("usage"), "rc": r.returncode, "stop_reason": out.get("stop_reason"),

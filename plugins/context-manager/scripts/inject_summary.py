@@ -2,11 +2,12 @@
 """SessionStart(compact) hook: re-inject part N (0-5) of the cumulative summary (Claude Code caps each hook at 10,000 chars)."""
 import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import NESTED, SUMMARIES
+from common import NESTED, SUMMARIES, utf8_stdio
 
 if os.environ.get(NESTED):
     sys.exit(0)
 PART, CAP = int(sys.argv[1]), 9600
+utf8_stdio()
 hook = json.load(sys.stdin)
 path = os.path.join(SUMMARIES, f"{hook['session_id']}.md")
 if not os.path.exists(path):

@@ -6,7 +6,7 @@ else the newest .jsonl of the project (or $RECALL_TRANSCRIPT). No model: literal
 """
 import glob, json, os, re, sys, unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import SESSIONS, claude_pid
+from common import SESSIONS, claude_pid, utf8_stdio
 
 SHOWN, HITS_TOTAL, HITS_PER_MSG, EXPAND_CAP, MESSAGE_CHARS, EXPAND_MAX = 500, 12, 3, 12000, 10000, 20
 
@@ -37,7 +37,7 @@ def transcript():
     p = os.environ.get("RECALL_TRANSCRIPT")
     if p:
         return p
-    pid = claude_pid(os.getppid())  # the SessionStart hook recorded this process's transcript
+    pid = claude_pid()  # the SessionStart hook recorded this process's transcript
     reg = os.path.join(SESSIONS, f"{pid}.json")
     if pid and os.path.exists(reg):
         p = json.load(open(reg)).get("transcript_path")
@@ -188,6 +188,7 @@ def reply(i, result=None, error=None):
     sys.stdout.flush()
 
 
+utf8_stdio()
 for raw in sys.stdin:
     try:
         req = json.loads(raw)

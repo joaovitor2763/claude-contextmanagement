@@ -2,9 +2,13 @@
   "mcpServers": {
     "recall": {
       "type": "stdio",
-      "command": "python3",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/recall_mcp.py"],
-      "env": { "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}" }
+      "command": "${user_config.python}",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/recall_mcp.py"
+      ],
+      "env": {
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
     }
   }
 }
