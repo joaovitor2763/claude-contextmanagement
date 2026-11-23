@@ -72,9 +72,18 @@ class Scripts(unittest.TestCase):
         hook = json.dumps({"session_id": "s1", "transcript_path": self.transcript, "source": "compact"})
         code, _, err = run("register_session.py", hook, self.env)
         self.assertEqual(code, 0, err)
-        os.makedirs(os.path.join(self.env["CLAUDE_PLUGIN_DATA"], "summaries"), exist_ok=True)
-        with open(os.path.join(self.env["CLAUDE_PLUGIN_DATA"], "summaries", "s1.md"), "w", encoding="utf-8") as f:
-            f.write(("## Goal\n" + ACCENTS + "\n") * 300)
+        store = os.path.join(self.env["CLAUDE_PLUGIN_DATA"], "summaries")
+        os.makedirs(store, exist_ok=True)
+        summary = ("## Goal\n" + ACCENTS + "\n") * 300
+        with open(os.path.join(store, "s1.md"), "w", encoding="utf-8") as f:
+            f.write(summary)
+        # The readable .md alone is not a freshness marker: injection requires a checkpoint.
+        from hashlib import sha256
+        state = {"version": 1, "session_id": "s1", "status": "ready", "summary": summary,
+                 "transcript_path": os.path.normcase(os.path.realpath(self.transcript)),
+                 "cursor": {"chars": 0, "sha256": sha256(b"").hexdigest()}}
+        with open(os.path.join(store, "s1.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
         parts = []
         for i in range(6):
             code, out, err = run("inject_summary.py", hook, self.env, str(i))

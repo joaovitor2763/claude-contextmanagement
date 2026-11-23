@@ -1,7 +1,7 @@
 {
   "name": "context-manager",
-  "version": "1.0.0",
-  "description": "On every compaction a cheap model (Haiku by default) writes a cumulative summary of the whole session, the main model writes only a short summary of recent work, and the session_recall tool searches the original transcript for exact old facts.",
+  "version": "1.0.1",
+  "description": "On compaction a cheap model (Haiku by default) checkpoints a cumulative summary; fresh summaries are reinjected within a bounded budget, and session_recall searches the verified session transcript for exact old facts.",
   "author": {
     "name": "joaovitor2763"
   },

@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """PreCompact hook: a cheap model writes the cumulative summary of the old history.
 
-Reads the transcript since the last compact boundary, adds the previous cumulative summary,
-asks the summarizer (same login, `claude -p --model haiku` by default) for a new cumulative summary with
-the checkpoint format of pi-coding-agent (MIT, Mario Zechner) plus summary rules, appends the cumulative lists of files
-read and modified, stores it for the SessionStart(compact) hook, and prints short-summary
-instructions so the main model writes only a brief summary of the most recent work.
+Reads the transcript since the last successful external summary's verified cursor,
+adds the previous cumulative summary, asks the summarizer (same login,
+`claude -p --model haiku` by default) for a new cumulative summary with the checkpoint
+format of pi-coding-agent (MIT, Mario Zechner) plus summary rules, appends cumulative
+lists of files read and modified, and publishes an atomic checkpoint. Failures keep
+the successful baseline for retry but disable injection of that obsolete summary.
 """
 import json, os, re, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import DATA, LOG, NESTED, SUMMARIES as STORE, utf8_stdio
+from common import DATA, LOG, NESTED, utf8_stdio
+from injection_layout import summary_fits
+from summary_state import (VERSION, cursor_matches, load_state, make_cursor,
+                           normalize_path, save_state, save_summary)
 
 TOOL_RESULT_MAX_CHARS = 2000  # as pi-coding-agent's serializeConversation
 TOOL_ARGS_MAX_CHARS = 20000
@@ -146,33 +150,39 @@ def with_files(summary, files):
     return summary + ("\n\n" + "\n\n".join(parts) if parts else "")
 
 
-def main():
-    if os.environ.get(NESTED):
-        return
-    utf8_stdio()
-    hook = json.load(sys.stdin)
-    sid, path = hook["session_id"], hook["transcript_path"]
-    os.makedirs(STORE, exist_ok=True)
-    lines = open(path, encoding="utf8").read().splitlines()
-    start = 0
-    for i, l in enumerate(lines):
-        if '"compact_boundary"' in l:
-            start = i + 1
-    prev_path = os.path.join(STORE, sid + ".md")
-    previous, files = "", {"read": set(), "modified": set()}
-    if os.path.exists(prev_path):
-        previous, files = split_files(open(prev_path, encoding="utf8").read())
+def _log(sid, t0, **fields):
+    # Do not log prompts, summary excerpts, stdout or stderr: they can contain secrets.
+    os.makedirs(DATA, exist_ok=True)
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"session": sid, "secs": round(time.time() - t0, 1),
+                            "model": MODEL, **fields}) + "\n")
+
+
+def _summarize(path, state, sid, t0):
+    with open(path, encoding="utf-8") as f:
+        transcript = f.read()
+    verified = cursor_matches(state["cursor"], transcript)
+    # Compact boundaries are not external-summary acknowledgements. On a rewritten
+    # transcript the hash no longer matches, so replay all original messages instead.
+    start = state["cursor"]["chars"] if verified else 0
+    previous, files = split_files(state["summary"])
     parts = []
-    for l in lines[start:]:
+    for line in transcript[start:].splitlines():
         try:
-            d = json.loads(l)
-        except Exception:
+            d = json.loads(line)
+        except (ValueError, TypeError):
             continue
-        if d.get("type") not in ("user", "assistant") or d.get("isCompactSummary") or d.get("isMeta"):
+        if not isinstance(d, dict) or d.get("type") not in ("user", "assistant") or d.get("isCompactSummary") or d.get("isMeta"):
             continue
         parts += serialize(d["type"], (d.get("message") or {}).get("content"), files)
-    if not parts and previous:
-        return  # nothing new since the last summary: keep it, let Claude Code summarize normally
+    if not parts:
+        # No new eligible content: only an already verified baseline may be ready.
+        state["status"] = "ready" if verified and previous else "failed"
+        save_state(sid, state)
+        _log(sid, t0, ok=state["status"] == "ready",
+             injection_complete=state["status"] == "ready" and summary_fits(state["summary"]),
+             reason="no_new_messages")
+        return
     body = f"<conversation>\n{chr(10).join(parts)}\n</conversation>\n\n"
     if previous:
         body += f"<previous-summary>\n{previous}\n</previous-summary>\n\n"
@@ -184,16 +194,15 @@ def main():
     # hooks don't receive it, so point CCM_ENV_FILE at a KEY=VALUE file that has it.
     envf = os.environ.get("CCM_ENV_FILE", "")
     if envf and os.path.exists(envf):
-        for l in open(envf, encoding="utf-8"):
-            k, _, v = l.rstrip("\n").partition("=")
-            if k and k not in env:
-                env[k] = v
-    # Everything long goes through stdin and a file: on Windows `claude` can be a .cmd shim, which
-    # would mangle multi-line arguments.
+        with open(envf, encoding="utf-8") as f:
+            for line in f:
+                k, _, v = line.rstrip("\n").partition("=")
+                if k and k not in env:
+                    env[k] = v
+    # Everything long goes through stdin and a file: Windows .cmd shims mangle multiline arguments.
     claude = shutil.which("claude") or "claude"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         f.write(SYSTEM)
-    t0 = time.time()
     try:
         r = subprocess.run([claude, "-p", "--model", MODEL, "--tools", "", "--no-session-persistence",
                             "--setting-sources", "user", "--strict-mcp-config", "--system-prompt-file", f.name,
@@ -202,13 +211,14 @@ def main():
                            errors="replace", cwd=tempfile.gettempdir(), timeout=900, env=env)
     finally:
         os.unlink(f.name)
-    # When the summary hits the output cap, Claude Code continues it in a new assistant message and
-    # `result` holds only that last piece, so join the text of every assistant message instead.
+    # `result` holds only the last continuation; join every assistant text instead.
     out, texts, messages = {}, [], 0
     for line in r.stdout.splitlines():
         try:
             ev = json.loads(line)
-        except Exception:
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(ev, dict):
             continue
         if ev.get("type") == "assistant":
             t = "".join(b.get("text", "") for b in (ev.get("message") or {}).get("content") or [] if b.get("type") == "text")
@@ -218,22 +228,59 @@ def main():
         elif ev.get("type") == "result":
             out = ev
     summary = "".join(texts).strip()
-    ok = summary and r.returncode == 0 and not out.get("is_error")
-    os.makedirs(DATA, exist_ok=True)
-    with open(LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"session": sid, "secs": round(time.time() - t0, 1), "input_chars": len(body), "model": MODEL,
-                            "summary_chars": len(summary), "cost_usd": out.get("total_cost_usd"),
-                            "usage": out.get("usage"), "rc": r.returncode, "stop_reason": out.get("stop_reason"),
-                            "text_messages": messages,
-                            "ok": bool(ok), "err": r.stderr[-500:],
-                            "head": (summary or r.stdout)[:300]}) + "\n")
+    ok = bool(summary and r.returncode == 0 and out and not out.get("is_error"))
+    final = with_files(summary, files) if ok else ""
+    fits = bool(ok and summary_fits(final))
     if ok:
-        open(prev_path, "w", encoding="utf8").write(with_files(summary, files))
+        # Freshness is independent of size: oversized results remain ready for an
+        # explicit excerpt, but Claude must also write its normal full compact summary.
+        updated = {**state, "summary": final, "cursor": make_cursor(transcript),
+                   "status": "ready"}
+        # Publish the mirror first while canonical state is still pending. If either
+        # write fails, retain the old success cursor and replay this interval on retry.
+        # A newer mirror without its checkpoint is harmless: it is never authoritative.
+        save_summary(sid, final)
+        save_state(sid, updated)
+        state.update(updated)
+    else:
+        state["status"] = "failed"
+        save_state(sid, state)
+    _log(sid, t0, input_chars=len(body), summary_chars=len(final),
+         cost_usd=out.get("total_cost_usd"), usage=out.get("usage"), rc=r.returncode,
+         text_messages=messages, ok=ok, injection_complete=fits,
+         reason="ready" if fits else ("summary_too_large" if ok else "summarizer_failed"))
+    if fits:
         print("Write a SHORT summary, at most 600 words. Cover only the most recent work in detail: the last user "
               "requests in their own words, the current task state, the files and values in use, and the next step. "
               "Do not summarize the older history: a separate detailed summary of the whole conversation is "
               "re-injected right after compaction.")
-    # on failure print nothing: Claude Code writes its normal full summary
 
 
-main()
+def main():
+    if os.environ.get(NESTED):
+        return
+    utf8_stdio()
+    hook = json.load(sys.stdin)
+    sid, path = hook["session_id"], normalize_path(hook["transcript_path"])
+    state = load_state(sid)
+    if state is None or state["transcript_path"] != path:
+        state = {"version": VERSION, "session_id": sid, "transcript_path": path,
+                 "summary": "", "cursor": None, "status": "pending"}
+    else:
+        state["status"] = "pending"
+    # Invalidate the prior injection *before* reading or invoking the summarizer.
+    # A process killed by the hook timeout leaves pending, never an obsolete ready.
+    save_state(sid, state)
+    t0 = time.time()
+    try:
+        _summarize(path, state, sid, t0)
+    except Exception as exc:
+        state["status"] = "failed"
+        save_state(sid, state)
+        _log(sid, t0, ok=False, reason="timeout" if isinstance(exc, subprocess.TimeoutExpired) else "exception",
+             error_type=type(exc).__name__)
+    # On failure print nothing: Claude Code writes its normal full summary.
+
+
+if __name__ == "__main__":
+    main()
